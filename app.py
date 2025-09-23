@@ -1,17 +1,7 @@
 import sys
-import os
-from langchain_mistralai import ChatMistralAI
-from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_community.document_loaders import WebBaseLoader
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_core.vectorstores import InMemoryVectorStore
-from langchain import hub
-from langchain_core.documents import Document
-from langgraph.graph import START, StateGraph
-from typing_extensions import TypedDict, List
-import bs4
-from time import sleep
 from PyQt5.QtWidgets import QMainWindow, QWidget, QApplication, QLabel, QLineEdit, QPushButton, QVBoxLayout
+from PyQt5.QtCore import QThread
+from worker import RAGWorker
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -19,14 +9,28 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("RAG Application")
         self.setGeometry(100, 100, 600, 300)
 
-        self.explainer_label = QLabel("This application uses Retrieval-Augmented Generation (RAG) to answer questions based on the Shrek movie script.", self)
+        self.explainer_label = QLabel("This application uses Retrieval-Augmented Generation (RAG) to answer questions based on the provided document.\n" \
+        "The document can either be a file or a URL. Provide either a file path or a URL.", self)
+        
+        self.document_input = QLineEdit(self)
+        self.document_input.setPlaceholderText("Enter file path or URL here...")
+        self.load_document_button = QPushButton("Load Document", self)
+
         self.question_label = QLabel("Please type your questions in the box below:", self)
+        self.question_label.hide()
         self.question_input = QLineEdit(self)
+        self.question_input.hide()
+        self.question_input.setPlaceholderText("Type your question here...")
         self.confirmation_button = QPushButton("Submit", self)
+        self.confirmation_button.hide()
+
         self.answer_label = QLabel("Answer will be displayed here.", self)
+        self.answer_label.hide()
 
         main_layout = QVBoxLayout()
         main_layout.addWidget(self.explainer_label)
+        main_layout.addWidget(self.document_input)
+        main_layout.addWidget(self.load_document_button)
         main_layout.addWidget(self.question_label)
         main_layout.addWidget(self.question_input)
         main_layout.addWidget(self.confirmation_button)
@@ -36,76 +40,69 @@ class MainWindow(QMainWindow):
         container.setLayout(main_layout)
         self.setCentralWidget(container)
 
-        self.question_input.setPlaceholderText("Type your question here...")
-        self.confirmation_button.clicked.connect(self.on_submit)
+        # -- CONNECTIONS --
+        self.load_document_button.clicked.connect(self.load_document)
+        self.confirmation_button.clicked.connect(self.get_answer)
 
-        self.graph = self.setup_rag()
+        self.thread = None
+        self.worker = None
 
-    def on_submit(self):
+    def load_document(self):
+        self.load_document_button.setText("Document Loading...")
+        self.load_document_button.setEnabled(False)
+        document_path = self.document_input.text()
+        if document_path:
+            self.thread = QThread()
+            if document_path.startswith("http"):
+                self.worker = RAGWorker(file_url=document_path)
+            else:
+                self.worker = RAGWorker(file_path=document_path)
+            self.worker.moveToThread(self.thread)
+
+            # Connect signals and slots
+            self.thread.started.connect(self.worker.setup_rag)
+            self.worker.finished.connect(self.thread.quit)
+            self.worker.finished.connect(self.worker.deleteLater)
+            self.thread.finished.connect(self.thread.deleteLater)
+            self.worker.progress.connect(self.update_status)
+            self.worker.setup_ready.connect(self.on_setup_complete)
+
+            # Start the thread
+            self.thread.start()
+
+    def on_setup_complete(self, graph):
+        self.graph = graph
+        self.question_label.show()
+        self.question_input.show()
+        self.confirmation_button.show()
+        self.load_document_button.setText("Load Document")
+        self.load_document_button.setEnabled(True)
+
+    def get_answer(self):
+        self.confirmation_button.setText("Getting Answer...")
+        self.confirmation_button.setEnabled(False)
         question = self.question_input.text()
-        response = self.graph.invoke({"question": question})
-        self.answer_label.setText(response["answer"])
-        self.question_input.clear()
+        if question:
+            self.thread = QThread()
+            self.worker = RAGWorker(user_question=question, graph=self.graph)
+            self.worker.moveToThread(self.thread)
 
-    def setup_rag(self):
-        # Get Mistral API key
-        if not os.environ.get("MISTRAL_API_KEY"):
-            os.environ["MISTRAL_API_KEY"] = open("C:\\Users\\iwama\\Desktop\\Osobiste\\rag_project\\key.txt").read().strip()
+            self.thread.started.connect(self.worker.ask_question)
+            self.worker.results_ready.connect(self.on_results_ready)
+            self.worker.finished.connect(self.thread.quit)
+            self.worker.finished.connect(self.worker.deleteLater)
+            self.thread.finished.connect(self.thread.deleteLater)
+            
+            self.thread.start()
 
-        # Create MistralAI llm object
-        llm = ChatMistralAI(model="mistral-large-latest")
+    def on_results_ready(self, answer):
+        self.answer_label.setText(answer)
+        self.answer_label.show()
+        self.confirmation_button.setText("Submit")
+        self.confirmation_button.setEnabled(True)
 
-        # Create an embedder object
-        embeddings = HuggingFaceEmbeddings(model_name="Snowflake/snowflake-arctic-embed-m")
-
-        # Load the Shrek script
-        bs4_strainer = bs4.SoupStrainer(class_=("scrtext"))
-        loader = WebBaseLoader(
-            web_paths=("https://imsdb.com/scripts/Shrek.html",),
-            bs_kwargs={"parse_only": bs4_strainer},
-        )
-        docs = loader.load()
-
-        # Split the document into chunks
-        text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=1024,  # chunk size (characters)
-            chunk_overlap=256,  # chunk overlap (characters)
-            add_start_index=True,  # track index in original document
-        )
-        all_splits = text_splitter.split_documents(docs)
-        print(f"Loaded and split the Shrek script into {len(all_splits)} sub-documents.")
-
-        # Put the embeddings into a vector store
-        vector_store = InMemoryVectorStore(embeddings)
-
-        document_ids = []
-        for i in range(0, len(all_splits)):
-            document_ids += vector_store.add_documents(documents=all_splits[i : i + 5])
-
-        # Prepare the query
-        prompt = hub.pull("rlm/rag-prompt")
-
-        class State(TypedDict):
-            question: str
-            context: List[Document]
-            answer: str
-
-        def retrieve(state: State):
-            retrieved_docs = vector_store.similarity_search(state["question"], k=8)
-            return {"context": retrieved_docs}
-
-        def generate(state: State):
-            docs_content = "\n\n".join(doc.page_content for doc in state["context"])
-            messages = prompt.invoke({"question": state["question"], "context": docs_content})
-            response = llm.invoke(messages)
-            return {"answer": response.content}
-
-        # Compile application and test
-        graph_builder = StateGraph(State).add_sequence([retrieve, generate])
-        graph_builder.add_edge(START, "retrieve")
-        graph = graph_builder.compile()
-        print("Set up complete!")
-        return graph
+    def update_status(self, message):
+        self.load_document_button.setText(message)
 
 
 if __name__ == "__main__":
