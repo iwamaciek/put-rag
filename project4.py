@@ -16,7 +16,7 @@ warnings.filterwarnings("ignore")
 
 # Get Mistral API key
 if not os.environ.get("MISTRAL_API_KEY"):
-    os.environ["MISTRAL_API_KEY"] = open("/home/maciej/Desktop/Maciej/sem2/MLOps/Project4/key.txt").read().strip()
+    os.environ["MISTRAL_API_KEY"] = open("C:\\Users\\iwama\\Desktop\\Osobiste\\rag_project\\key.txt").read().strip()
 
 # Create MistralAI llm object
 llm = ChatMistralAI(model="mistral-large-latest")
