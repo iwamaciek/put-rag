@@ -30,7 +30,7 @@ class RAGWorker(QObject):
     def setup_rag(self):
         # Get Mistral API key
         if not os.environ.get("MISTRAL_API_KEY"):
-            with open("C:\\Users\\iwama\\Desktop\\Osobiste\\rag_project\\key.txt") as key_file:
+            with open("key.txt") as key_file:
                 os.environ["MISTRAL_API_KEY"] = key_file.read().strip()
 
         # Create MistralAI llm object
